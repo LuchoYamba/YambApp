@@ -1,0 +1,7 @@
+{
+  "name": "yambapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Panel de operaciones para discoteca YambApp",
+  "scripts": { "start": "node server.mjs" }
+}
