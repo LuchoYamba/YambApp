@@ -2,6 +2,14 @@
   "name": "yambapp",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Panel de operaciones para discoteca YambApp",
-  "scripts": { "start": "node server.mjs" }
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1"
+  }
 }
