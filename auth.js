@@ -10,6 +10,7 @@
   let activeProfile;
   let sessionBar;
   let callbackType = '';
+  let authInitialized = false;
 
   const roleNames = {
     ADMIN: 'Administrador',
@@ -39,7 +40,7 @@
     app.hidden = true;
     if (sessionBar) sessionBar.remove();
     const invitation = mode === 'password' && callbackType === 'invite';
-    const title = mode === 'password' ? (invitation ? 'Activar cuenta' : 'Elegir contraseña') : mode === 'recovery' ? 'Recuperar acceso' : 'Ingresar a YambApp';
+    const title = mode === 'password' ? 'Elegir contraseña' : mode === 'recovery' ? 'Recuperar acceso' : 'Ingresar a YambApp';
     const subtitle = mode === 'password'
       ? (invitation ? 'Definí una contraseña para completar la invitación.' : 'Definí una contraseña nueva para tu cuenta.')
       : mode === 'recovery' ? 'Te enviaremos un enlace para restablecer tu contraseña.' : 'Ingresá con tu cuenta de YambApp.';
@@ -87,6 +88,16 @@
     return { profile: body.profile };
   }
 
+  async function fetchCredentialProfile(accessToken) {
+    const response = await fetch('/api/auth/credential-profile', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: 'no-store',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return { error: body.error || 'No se pudo validar el perfil.' };
+    return { profile: body.profile };
+  }
+
   async function apiFetch(path, options = {}) {
     const { data } = await supabaseClient.auth.getSession();
     if (!data.session?.access_token) throw new Error('Sesión no válida');
@@ -106,6 +117,22 @@
       return;
     }
 
+    if (passwordFlow || callbackType === 'invite' || callbackType === 'recovery') {
+      const result = await fetchCredentialProfile(session.access_token);
+      if (!result.profile) {
+        await supabaseClient.auth.signOut({ scope: 'local' });
+        activeProfile = null;
+        window.yambaAuth = null;
+        cleanCallbackUrl();
+        renderAuth('login', result.error || 'No existe un perfil activo para esta cuenta.');
+        return;
+      }
+      activeProfile = null;
+      window.yambaAuth = null;
+      renderAuth('password');
+      return;
+    }
+
     const result = await fetchActiveProfile(session.access_token);
     if (!result.profile) {
       await supabaseClient.auth.signOut({ scope: 'local' });
@@ -122,11 +149,6 @@
 
     activeProfile = result.profile;
     window.yambaAuth = { profile: activeProfile, signOut, apiFetch };
-    if (passwordFlow || callbackType === 'invite' || callbackType === 'recovery') {
-      renderAuth('password');
-      return;
-    }
-
     cleanCallbackUrl();
     showApplication();
   }
@@ -200,15 +222,43 @@
       renderAuth('password', 'Las contraseñas no coinciden.');
       return;
     }
+
+    const { data: current } = await supabaseClient.auth.getSession();
+    if (!current.session?.access_token) {
+      await supabaseClient.auth.signOut({ scope: 'local' });
+      cleanCallbackUrl();
+      renderAuth('login', linkErrorMessage());
+      return;
+    }
+    const active = await fetchCredentialProfile(current.session.access_token);
+    if (!active.profile) {
+      await supabaseClient.auth.signOut({ scope: 'local' });
+      activeProfile = null;
+      window.yambaAuth = null;
+      cleanCallbackUrl();
+      renderAuth('login', active.error || 'El perfil no está activo. Contactá a un Administrador.');
+      return;
+    }
+
     const { error } = await supabaseClient.auth.updateUser({ password });
     if (error) {
       renderAuth('password', friendlyAuthError(error));
       return;
     }
+    const { data: updatedSession } = await supabaseClient.auth.getSession();
+    if (active.profile.role !== 'ADMIN') {
+      await supabaseClient.auth.signOut({ scope: 'local' });
+      activeProfile = null;
+      window.yambaAuth = null;
+      callbackType = '';
+      cleanCallbackUrl();
+      renderAuth('login', 'Contraseña configurada. El acceso operativo todavía no está habilitado para tu rol.');
+      return;
+    }
+
     callbackType = '';
     cleanCallbackUrl();
-    const { data } = await supabaseClient.auth.getSession();
-    await authorizeSession(data.session);
+    await authorizeSession(updatedSession.session);
   }
 
   async function signOut() {
@@ -234,6 +284,16 @@
       supabaseClient = window.supabase.createClient(config.supabaseUrl, config.publishableKey, {
         auth: { detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
       });
+      supabaseClient.auth.onAuthStateChange((event, session) => {
+        if (event === 'SIGNED_OUT') {
+          activeProfile = null;
+          window.yambaAuth = null;
+          if (authInitialized) renderAuth('login');
+        } else if (event === 'PASSWORD_RECOVERY' && session) {
+          callbackType = 'recovery';
+          if (authInitialized) queueMicrotask(() => authorizeSession(session, true));
+        }
+      });
       const { data, error } = await supabaseClient.auth.getSession();
       if (error) {
         renderAuth('login', friendlyAuthError(error));
@@ -244,16 +304,7 @@
         return;
       }
       await authorizeSession(data.session);
-      supabaseClient.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_OUT') {
-          activeProfile = null;
-          window.yambaAuth = null;
-          renderAuth('login');
-        } else if (event === 'PASSWORD_RECOVERY' && session) {
-          callbackType = 'recovery';
-          authorizeSession(session, true);
-        }
-      });
+      authInitialized = true;
       window.addEventListener('focus', revalidateVisibleSession);
       document.addEventListener('visibilitychange', revalidateVisibleSession);
       window.setInterval(revalidateVisibleSession, 45000);

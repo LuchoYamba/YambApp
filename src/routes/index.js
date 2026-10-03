@@ -15,6 +15,51 @@ apiRouter.get('/config', (req, res) => {
   return res.json({ supabaseUrl, publishableKey });
 });
 
+// Validates only an authenticated user's own active profile for invitation and
+// recovery flows. Operational access remains guarded by /auth/profile below.
+apiRouter.get('/auth/credential-profile', async (req, res) => {
+  const supabaseAdmin = req.app.locals.supabaseAdmin;
+  const authorization = req.get('authorization') || '';
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!supabaseAdmin || !token) {
+    return res.status(401).json({ ok: false, error: 'Sesión no válida' });
+  }
+
+  try {
+    const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(token);
+    if (authError || !authData.user) {
+      return res.status(401).json({ ok: false, error: 'Sesión no válida' });
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, first_name, last_name, role_code, is_active')
+      .eq('id', authData.user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('No se pudo validar el perfil para configurar credenciales.');
+      return res.status(503).json({ ok: false, error: 'No se pudo validar el perfil' });
+    }
+    if (!profile || !profile.is_active) {
+      return res.status(403).json({ ok: false, error: 'Perfil inexistente o inactivo' });
+    }
+
+    return res.json({
+      profile: {
+        id: profile.id,
+        firstName: profile.first_name,
+        lastName: profile.last_name,
+        role: profile.role_code,
+        isActive: profile.is_active,
+      },
+    });
+  } catch {
+    console.error('Error al validar el perfil para configurar credenciales.');
+    return res.status(503).json({ ok: false, error: 'No se pudo validar el perfil' });
+  }
+});
+
 apiRouter.get('/auth/profile', async (req, res) => {
   const supabaseAdmin = req.app.locals.supabaseAdmin;
   const authorization = req.get('authorization') || '';
