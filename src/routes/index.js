@@ -106,6 +106,58 @@ apiRouter.get('/auth/profile', async (req, res) => {
   }
 });
 
+// Returns only the caller's effective permissions. This is informational in
+// this stage; operational access remains guarded by /auth/profile and the
+// administrative routes retain their independent ADMIN check.
+apiRouter.get('/auth/permissions', async (req, res) => {
+  const client = req.app.locals.supabaseAdmin;
+  const token = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i)?.[1];
+  res.set('Cache-Control', 'no-store');
+  if (!client || !token) {
+    return res.status(401).json({ ok: false, error: 'Sesión no válida' });
+  }
+
+  try {
+    const { data: auth, error: authError } = await client.auth.getUser(token);
+    if (authError || !auth.user) {
+      return res.status(401).json({ ok: false, error: 'Sesión no válida' });
+    }
+
+    const { data: profile, error: profileError } = await client
+      .from('profiles')
+      .select('id, role_code, is_active')
+      .eq('id', auth.user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('No se pudo validar el perfil para consultar permisos.');
+      return res.status(503).json({ ok: false, error: 'No se pudieron consultar los permisos' });
+    }
+    if (!profile || !profile.is_active) {
+      return res.status(403).json({ ok: false, error: 'Perfil inexistente o inactivo' });
+    }
+
+    const { data: rows, error: permissionsError } = await client
+      .from('role_permissions')
+      .select('permission_code')
+      .eq('role_code', profile.role_code)
+      .order('permission_code');
+
+    if (permissionsError) {
+      console.error('No se pudieron consultar los permisos efectivos del perfil.');
+      return res.status(503).json({ ok: false, error: 'No se pudieron consultar los permisos' });
+    }
+
+    return res.json({
+      role: profile.role_code,
+      permissions: (rows || []).map(row => row.permission_code),
+    });
+  } catch {
+    console.error('Error al consultar permisos efectivos del perfil.');
+    return res.status(503).json({ ok: false, error: 'No se pudieron consultar los permisos' });
+  }
+});
+
 const validRoles = new Set(['ADMIN', 'ENCARGADO', 'CAJERO', 'BARRA']);
 const profileFields = 'id, first_name, last_name, role_code, is_active, created_at';
 
