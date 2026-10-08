@@ -88,6 +88,10 @@
     return { profile: body.profile };
   }
 
+  function hasOperationalAccess(profile) {
+    return Array.isArray(profile?.permissions) && profile.permissions.includes('DASHBOARD_VIEW');
+  }
+
   async function fetchCredentialProfile(accessToken) {
     const response = await fetch('/api/auth/credential-profile', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -140,15 +144,15 @@
       renderAuth('login', result.error || 'No existe un perfil activo para esta cuenta.');
       return;
     }
-    if (result.profile.role !== 'ADMIN') {
+    if (!hasOperationalAccess(result.profile)) {
       await supabaseClient.auth.signOut({ scope: 'local' });
       cleanCallbackUrl();
-      renderAuth('login', 'El acceso a la aplicación está habilitado para Administradores en esta etapa.');
+      renderAuth('login', 'Esta cuenta todavía no tiene permisos para acceder a la aplicación operativa.');
       return;
     }
 
     activeProfile = result.profile;
-    window.yambaAuth = { profile: activeProfile, signOut, apiFetch };
+    window.yambaAuth = { profile: activeProfile, permissions: activeProfile.permissions, signOut, apiFetch };
     cleanCallbackUrl();
     showApplication();
   }
@@ -158,15 +162,15 @@
     const { data } = await supabaseClient.auth.getSession();
     if (!data.session?.access_token) return signOut();
     const result = await fetchActiveProfile(data.session.access_token);
-    if (!result.profile || result.profile.role !== 'ADMIN') {
+    if (!result.profile || !hasOperationalAccess(result.profile)) {
       await supabaseClient.auth.signOut({ scope: 'local' });
       activeProfile = null;
       window.yambaAuth = null;
-      renderAuth('login', result.error || 'El acceso a la aplicación ya no está habilitado para esta cuenta.');
+      renderAuth('login', result.error || 'Esta cuenta ya no tiene permisos para acceder a la aplicación operativa.');
       return;
     }
     activeProfile = result.profile;
-    window.yambaAuth = { profile: activeProfile, signOut, apiFetch };
+    window.yambaAuth = { profile: activeProfile, permissions: activeProfile.permissions, signOut, apiFetch };
     window.render?.();
   }
 
@@ -246,16 +250,6 @@
       return;
     }
     const { data: updatedSession } = await supabaseClient.auth.getSession();
-    if (active.profile.role !== 'ADMIN') {
-      await supabaseClient.auth.signOut({ scope: 'local' });
-      activeProfile = null;
-      window.yambaAuth = null;
-      callbackType = '';
-      cleanCallbackUrl();
-      renderAuth('login', 'Contraseña configurada. El acceso operativo todavía no está habilitado para tu rol.');
-      return;
-    }
-
     callbackType = '';
     cleanCallbackUrl();
     await authorizeSession(updatedSession.session);

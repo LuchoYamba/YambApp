@@ -15,6 +15,14 @@ apiRouter.get('/config', (req, res) => {
   return res.json({ supabaseUrl, publishableKey });
 });
 
+async function resolveEffectivePermissions(client, roleCode) {
+  return client
+    .from('role_permissions')
+    .select('permission_code, permissions!role_permissions_permission_code_fkey(code)')
+    .eq('role_code', roleCode)
+    .order('permission_code');
+}
+
 // Validates only an authenticated user's own active profile for invitation and
 // recovery flows. Operational access remains guarded by /auth/profile below.
 apiRouter.get('/auth/credential-profile', async (req, res) => {
@@ -87,8 +95,16 @@ apiRouter.get('/auth/profile', async (req, res) => {
     if (!profile || !profile.is_active) {
       return res.status(403).json({ ok: false, error: 'Perfil inexistente o inactivo' });
     }
-    if (profile.role_code !== 'ADMIN') {
-      return res.status(403).json({ ok: false, error: 'El acceso está habilitado para Administradores en esta etapa' });
+    const { data: grants, error: permissionsError } = await resolveEffectivePermissions(supabaseAdmin, profile.role_code);
+    if (permissionsError) {
+      console.error('No se pudieron resolver los permisos para el acceso operativo.');
+      return res.status(503).json({ ok: false, error: 'No se pudieron validar los permisos de la cuenta' });
+    }
+    const permissions = (grants || [])
+      .filter(grant => grant.permissions?.code === grant.permission_code)
+      .map(grant => grant.permissions.code);
+    if (!permissions.includes('DASHBOARD_VIEW')) {
+      return res.status(403).json({ ok: false, error: 'Esta cuenta no tiene permiso para acceder a la aplicación operativa' });
     }
 
     return res.json({
@@ -98,6 +114,7 @@ apiRouter.get('/auth/profile', async (req, res) => {
         lastName: profile.last_name,
         role: profile.role_code,
         isActive: profile.is_active,
+        permissions,
       },
     });
   } catch {
@@ -137,11 +154,7 @@ apiRouter.get('/auth/permissions', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'Perfil inexistente o inactivo' });
     }
 
-    const { data: rows, error: permissionsError } = await client
-      .from('role_permissions')
-      .select('permission_code')
-      .eq('role_code', profile.role_code)
-      .order('permission_code');
+    const { data: rows, error: permissionsError } = await resolveEffectivePermissions(client, profile.role_code);
 
     if (permissionsError) {
       console.error('No se pudieron consultar los permisos efectivos del perfil.');
@@ -150,7 +163,9 @@ apiRouter.get('/auth/permissions', async (req, res) => {
 
     return res.json({
       role: profile.role_code,
-      permissions: (rows || []).map(row => row.permission_code),
+      permissions: (rows || [])
+        .filter(row => row.permissions?.code === row.permission_code)
+        .map(row => row.permissions.code),
     });
   } catch {
     console.error('Error al consultar permisos efectivos del perfil.');
